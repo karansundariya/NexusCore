@@ -172,6 +172,7 @@ public class RateLimitFilter implements WebFilter {
 
         return redisTemplate.execute(script, keys, args)
                 .next()  // Take the single Long result from the Flux<Long>
+                .defaultIfEmpty((long) defaultCapacity)  // If Redis returned no value, fail open gracefully
                 .flatMap(remaining -> {
                     if (remaining < 0) {
                         // Bucket empty: reject with HTTP 429
@@ -209,15 +210,7 @@ public class RateLimitFilter implements WebFilter {
                     exchange.getAttributes().put("apiKeyHash", apiKeyHash);
 
                     return chain.filter(exchange);
-                })
-                .switchIfEmpty(
-                    // Redis returned no value (shouldn't happen with our Lua script)
-                    // Fail open: allow the request but log a warning
-                    Mono.defer(() -> {
-                        log.error("Redis returned no value for rate limit check — failing open");
-                        return chain.filter(exchange);
-                    })
-                );
+                });
     }
 
     /**

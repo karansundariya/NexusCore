@@ -58,7 +58,8 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.jpa.database-platform", () -> "org.hibernate.dialect.H2Dialect");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
 
-        // Disable Kafka auto-configuration in tests (use embedded broker from @EmbeddedKafka)
-        // The embedded Kafka broker URL is injected by @EmbeddedKafka in specific test classes
+        // Disable Kafka auto-configuration and listener in tests
+        registry.add("spring.kafka.listener.auto-startup", () -> "false");
+        registry.add("spring.kafka.admin.auto-create", () -> "false");
     }
 }

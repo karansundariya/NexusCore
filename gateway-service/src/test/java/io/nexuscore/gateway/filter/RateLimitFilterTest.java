@@ -1,11 +1,16 @@
 package io.nexuscore.gateway.filter;
 
 import io.nexuscore.gateway.AbstractIntegrationTest;
+import io.nexuscore.gateway.service.KafkaProducerService;
+import io.nexuscore.gateway.service.SemanticCacheService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import reactor.core.publisher.Flux;
@@ -18,6 +23,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 
 /**
  * =============================================================================
@@ -57,6 +63,20 @@ public class RateLimitFilterTest extends AbstractIntegrationTest {
 
     @Autowired
     private WebTestClient webTestClient;
+
+    @MockBean
+    private SemanticCacheService semanticCacheService;
+
+    @MockBean
+    private KafkaProducerService kafkaProducerService;
+
+    @BeforeEach
+    void setUp() {
+        // Fast-path allowed requests to simulate cache hit so they return in 1ms
+        // without waiting for Kafka or Python worker during rate limit testing
+        Mockito.when(semanticCacheService.lookup(any(float[].class)))
+                .thenReturn(Mono.just(SemanticCacheService.CacheResult.hit("Mock test response", 0.99)));
+    }
 
     // The dev API key seeded in init_postgres.sql
     private static final String VALID_API_KEY = "nexuscore-dev-key-12345";
@@ -120,6 +140,7 @@ public class RateLimitFilterTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("65 rapid requests: 60 succeed, 5 return HTTP 429")
     void rateLimitEnforcement_60Allowed_5Rejected() throws InterruptedException {
+        String testKey = "rate-test-key-" + System.currentTimeMillis();
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger rateLimitedCount = new AtomicInteger(0);
         List<Integer> statusCodes = new ArrayList<>();
@@ -131,10 +152,10 @@ public class RateLimitFilterTest extends AbstractIntegrationTest {
                     var status = webTestClient.post()
                             .uri("/v1/chat/completions")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .header("Authorization", "Bearer " + VALID_API_KEY)
+                            .header("Authorization", "Bearer " + testKey)
                             .bodyValue(buildChatRequest("Concurrent request #" + i))
                             .exchange()
-                            .returnResult(String.class)
+                            .returnResult(Void.class)
                             .getStatus();
                     int code = status.value();
                     synchronized (statusCodes) {
@@ -148,7 +169,7 @@ public class RateLimitFilterTest extends AbstractIntegrationTest {
                     latch.countDown();
                     return code;
                 }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()), TOTAL_REQUESTS)  // Concurrency = TOTAL_REQUESTS
-                .blockLast(Duration.ofSeconds(30));
+                .blockLast(Duration.ofSeconds(15));
 
         latch.await();
 
@@ -186,16 +207,18 @@ public class RateLimitFilterTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("HTTP 429 response includes Retry-After header")
     void rateLimitedResponse_includesRetryAfterHeader() {
+        String overflowKey = "overflow-test-key-" + System.currentTimeMillis();
+
         // Exhaust the rate limit bucket
         Flux.range(1, RATE_LIMIT + 1)
                 .flatMap(i -> Mono.fromCallable(() -> {
                     return webTestClient.post()
                             .uri("/v1/chat/completions")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .header("Authorization", "Bearer " + VALID_API_KEY)
+                            .header("Authorization", "Bearer " + overflowKey)
                             .bodyValue(buildChatRequest("Request #" + i))
                             .exchange()
-                            .returnResult(String.class)
+                            .returnResult(Void.class)
                             .getStatus()
                             .value();
                 }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()), RATE_LIMIT + 1)
@@ -205,7 +228,7 @@ public class RateLimitFilterTest extends AbstractIntegrationTest {
         webTestClient.post()
                 .uri("/v1/chat/completions")
                 .contentType(MediaType.APPLICATION_JSON)
-                .header("Authorization", "Bearer " + VALID_API_KEY)
+                .header("Authorization", "Bearer " + overflowKey)
                 .bodyValue(buildChatRequest("This request should be rate limited"))
                 .exchange()
                 .expectStatus().isEqualTo(429)
