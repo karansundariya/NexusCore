@@ -192,6 +192,11 @@
       <artifactId>spring-kafka-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>test</scope>
+    </dependency>
     <!-- Embedded Redis for integration tests (no Docker required in unit test phase) -->
     <dependency>
       <groupId>com.github.codemonstur</groupId>

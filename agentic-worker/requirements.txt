@@ -64,7 +64,7 @@ langchain-core==0.3.15
 langchain-community==0.3.7
 
 # LLM Routing and Fallback
-litellm==1.52.9
+litellm>=1.53.1
 
 # Kafka
 kafka-python==2.0.2
