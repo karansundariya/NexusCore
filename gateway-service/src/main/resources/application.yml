@@ -1,0 +1,222 @@
+# =============================================================================
+# NexusCore Gateway Service — Application Configuration
+# =============================================================================
+# WHY application.yml over application.properties?
+#   YAML supports nested structures and multi-line values, making complex
+#   Spring configuration dramatically more readable. The indentation hierarchy
+#   mirrors the actual Spring property namespace structure.
+#
+# CONFIGURATION SECTIONS:
+#   1. Server    — HTTP server port, compression, connection pool
+#   2. Redis     — Connection to Redis Stack (Lettuce reactive client)
+#   3. Kafka     — Producer and consumer configuration
+#   4. Spring JPA— PostgreSQL datasource and Hibernate settings
+#   5. NexusCore — Custom application properties (rate limits, thresholds)
+#   6. Actuator  — Health check and metrics endpoints
+# =============================================================================
+
+spring:
+  application:
+    name: nexuscore-gateway
+
+  # ===========================================================================
+  # THREADING: Enable Virtual Threads (Java 21 Project Loom)
+  # ===========================================================================
+  # WHY Virtual Threads?
+  #   Traditional platform threads are expensive (1-2MB stack each). Virtual
+  #   threads are lightweight (a few KB each), managed by the JVM rather than
+  #   the OS. Enabling this allows WebFlux's Netty to use virtual threads for
+  #   blocking operations (JPA calls to Postgres), achieving near-reactive
+  #   performance without fully rewriting everything as reactive code.
+  threads:
+    virtual:
+      enabled: true
+
+  # ===========================================================================
+  # REDIS CONFIGURATION (Lettuce Reactive Client)
+  # ===========================================================================
+  # Connects to the redis-stack Docker container.
+  # In production: use Redis Sentinel or Redis Cluster URLs for HA.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}   # Override with REDIS_HOST env var in Docker/K8s
+      port: ${REDIS_PORT:6379}
+      # Connection pool settings for Lettuce (reactive, shared connection model)
+      lettuce:
+        pool:
+          max-active: 20     # Maximum active connections in the pool
+          max-idle: 10       # Keep up to 10 idle connections warm (avoids reconnect latency)
+          min-idle: 2        # Always maintain 2 idle connections for burst traffic
+          max-wait: 1000ms   # Throw exception after 1s if no connection available
+
+    # =========================================================================
+    # POSTGRESQL CONFIGURATION (JPA + Hibernate)
+    # =========================================================================
+    jpa:
+      hibernate:
+        # ddl-auto: validate — Hibernate validates schema matches entities but
+        # does NOT modify the schema. Schema is managed by init_postgres.sql.
+        # NEVER use 'create-drop' in production (destroys data on restart).
+        ddl-auto: validate
+      show-sql: false   # Set to true for query debugging; disable in production
+      properties:
+        hibernate:
+          dialect: org.hibernate.dialect.PostgreSQLDialect
+          # Enable JDBC batch inserts for audit log bulk writes (performance optimization)
+          jdbc:
+            batch_size: 50
+          order_inserts: true
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/nexuscore
+    username: ${POSTGRES_USER:nexuscore}
+    password: ${POSTGRES_PASSWORD:nexuscore_secret}
+    driver-class-name: org.postgresql.Driver
+    # HikariCP connection pool (Spring Boot default, very fast)
+    hikari:
+      pool-name: NexusCoreHikari
+      maximum-pool-size: 20      # Max concurrent DB connections
+      minimum-idle: 5            # Keep 5 connections warm
+      connection-timeout: 5000   # Fail fast if DB is unavailable (5s)
+      idle-timeout: 600000       # Release idle connections after 10 minutes
+      max-lifetime: 1800000      # Recycle connections every 30 minutes (avoids stale connections)
+
+  # ===========================================================================
+  # KAFKA CONFIGURATION
+  # ===========================================================================
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+    # Producer configuration for KafkaProducerService
+    producer:
+      # acks=all: Wait for ALL in-sync replicas to acknowledge the write.
+      # This is the strongest durability guarantee. In single-node dev, acks=all
+      # waits for the leader only (since there are no replicas).
+      acks: all
+
+      # Idempotent producer: Kafka assigns a producer ID and sequence numbers
+      # to each message. If a retry occurs, Kafka deduplicates the message,
+      # preventing duplicate prompts in the ai.prompts.unprocessed topic.
+      properties:
+        enable.idempotence: true
+        # Retry configuration: retry up to 5 times with exponential backoff
+        retries: 5
+        retry.backoff.ms: 500
+        max.in.flight.requests.per.connection: 5  # Required for idempotence
+
+      # JSON serialization for message keys (String) and values (Java objects)
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+    # Consumer configuration for KafkaConsumerService (telemetry audit)
+    consumer:
+      group-id: nexuscore-audit-consumer
+      # earliest: Read from the beginning of the topic if no committed offset exists.
+      # This ensures we don't miss events if the consumer restarts.
+      auto-offset-reset: earliest
+      # Manual offset commit: only commit after successfully writing to Postgres.
+      # This prevents data loss if the consumer crashes between receive and persist.
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "io.nexuscore.gateway.model"
+
+# ==============================================================================
+# SERVER CONFIGURATION
+# ==============================================================================
+server:
+  port: ${SERVER_PORT:8080}
+  # Enable HTTP response compression for large LLM responses (can be 10-50KB)
+  compression:
+    enabled: true
+    min-response-size: 1024   # Only compress responses > 1KB
+    mime-types: application/json,text/event-stream
+  # Netty-specific: increase max header size for long Authorization tokens
+  netty:
+    max-initial-line-length: 16384
+    max-header-size: 16384
+
+# ==============================================================================
+# NEXUSCORE CUSTOM APPLICATION PROPERTIES
+# ==============================================================================
+# These are injected into Spring beans via @ConfigurationProperties or @Value.
+nexuscore:
+  # ---------------------------------------------------------------------------
+  # Rate Limiting Configuration
+  # ---------------------------------------------------------------------------
+  rate-limit:
+    # Default token bucket capacity (burst limit): max requests per window
+    default-capacity: 60
+    # Window duration in seconds (60s = 1 minute sliding window)
+    window-seconds: 60
+    # Redis key prefix for token bucket counters: "rate_limit:{api_key_hash}"
+    redis-key-prefix: "rate_limit:"
+
+  # ---------------------------------------------------------------------------
+  # Semantic Cache Configuration
+  # ---------------------------------------------------------------------------
+  semantic-cache:
+    # Cosine similarity threshold for a cache HIT.
+    # WHY 0.96?
+    #   0.96 means the vectors are within ~16 degrees of each other. In practice,
+    #   paraphrases and rephrasings of the same question consistently score 0.96-0.99,
+    #   while genuinely different questions score 0.85 or lower. This threshold
+    #   was determined empirically on real-world support query datasets.
+    #   Setting it lower (e.g., 0.90) increases hit rate but risks returning
+    #   semantically adjacent but contextually wrong cached answers.
+    similarity-threshold: 0.96
+    # Redis VSS index name (must match init_redis_vss.sh)
+    index-name: "idx:prompt_vss"
+    # Cache entry TTL in seconds: 24 hours
+    ttl-seconds: 86400
+
+  # ---------------------------------------------------------------------------
+  # Embedding Configuration
+  # ---------------------------------------------------------------------------
+  embedding:
+    # Embedding vector dimensions must match the Redis VSS index DIM parameter
+    dimensions: 1536
+    # Use mock embeddings for local testing (no OpenAI API key required)
+    use-mock: ${USE_MOCK_EMBEDDINGS:true}
+    # OpenAI API key (only used when use-mock=false)
+    openai-api-key: ${OPENAI_API_KEY:}
+
+  # ---------------------------------------------------------------------------
+  # Kafka Topic Names
+  # ---------------------------------------------------------------------------
+  kafka:
+    topics:
+      prompts-unprocessed: "ai.prompts.unprocessed"
+      telemetry-events: "ai.telemetry.events"
+
+# ==============================================================================
+# ACTUATOR: Management Endpoints for Health Checks and Metrics
+# ==============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        # Expose health and metrics; restrict others in production
+        include: health,metrics,info,prometheus
+  endpoint:
+    health:
+      # Show detailed health status including Redis, Kafka, and DB connectivity
+      show-details: always
+  # Micrometer OpenTelemetry tracing configuration (MVP 6)
+  tracing:
+    sampling:
+      probability: 1.0   # Sample 100% of traces in dev; reduce to 0.01 in production
+
+# ==============================================================================
+# LOGGING CONFIGURATION
+# ==============================================================================
+logging:
+  level:
+    io.nexuscore: DEBUG    # Verbose logging for our own classes
+    org.springframework.web: INFO
+    org.apache.kafka: WARN
+    io.lettuce: WARN
+  pattern:
+    # Include trace ID in every log line for correlation with OpenTelemetry
+    console: "%d{HH:mm:ss.SSS} [%thread] [%X{traceId}] %-5level %logger{36} - %msg%n"

@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  NexusCore Gateway Service — Maven POM
+  =============================================================================
+  WHY SPRING BOOT 3 + JAVA 21?
+    Spring Boot 3.x requires Java 17+ and targets the Jakarta EE 10 namespace.
+    Java 21 gives us Virtual Threads (Project Loom) via spring.threads.virtual.enabled=true,
+    allowing the same reactive throughput as WebFlux but with simpler imperative code.
+    We use WebFlux (Project Reactor) for its non-blocking event-loop model — a single
+    thread can handle thousands of concurrent HTTP connections without blocking on I/O.
+
+  WHY SPRING WEBFLUX OVER SPRING MVC?
+    The Gateway's critical path:
+      1. Validate API key (Redis lookup) — I/O bound
+      2. Compute vector embedding — CPU bound
+      3. Query Redis VSS — I/O bound
+      4. Publish to Kafka — I/O bound
+    WebFlux chains these as a non-blocking reactive pipeline. Spring MVC would block
+    a thread per request, creating a thread-pool bottleneck under high concurrency.
+    WebFlux uses Netty's event loop with backpressure, handling 10x+ more concurrent
+    requests on the same hardware.
+
+  DEPENDENCY BREAKDOWN:
+    spring-boot-starter-webflux     — Non-blocking HTTP server (Netty) + Project Reactor
+    spring-boot-starter-data-redis-reactive — Reactive Redis client (Lettuce)
+    spring-kafka                    — Kafka producer/consumer with Spring integration
+    spring-boot-starter-data-jpa    — PostgreSQL ORM for API key and audit log persistence
+    postgresql                      — JDBC driver for Postgres
+    lombok                          — Reduces boilerplate (@Data, @Slf4j, @Builder)
+    micrometer-tracing-bridge-otel  — OpenTelemetry tracing integration (MVP 6)
+    spring-boot-starter-test        — JUnit 5, Mockito, and Reactor Test utilities
+  =============================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <!-- Spring Boot 3.3.x: latest stable, Java 21 LTS support, Micrometer 1.13 -->
+    <version>3.3.5</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>io.nexuscore</groupId>
+  <artifactId>gateway-service</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <name>NexusCore Gateway Service</name>
+  <description>
+    Enterprise AI Gateway with Redis VSS semantic caching, Kafka event streaming,
+    and distributed token-bucket rate limiting. Serves as the single ingress point
+    for all LLM API traffic in the NexusCore platform.
+  </description>
+
+  <properties>
+    <!-- Target Java 21 LTS: Virtual Threads, Pattern Matching, Record Patterns -->
+    <java.version>21</java.version>
+    <!-- Consistent encoding prevents platform-specific build failures -->
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <!-- Library versions pinned for reproducibility -->
+    <spring-kafka.version>3.2.4</spring-kafka.version>
+  </properties>
+
+  <dependencies>
+
+    <!-- =====================================================================
+         CORE WEB LAYER: Spring WebFlux (Non-Blocking, Reactive HTTP Server)
+         =====================================================================
+         Provides: @RestController, @GetMapping, WebClient, ServerSentEvent,
+         RouterFunction, Netty embedded server.
+         Under the hood: Project Reactor (Mono<T>, Flux<T>) on Netty event loops. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webflux</artifactId>
+    </dependency>
+
+    <!-- =====================================================================
+         REDIS: Reactive Spring Data Redis (Lettuce Client)
+         =====================================================================
+         Provides: ReactiveRedisTemplate, ReactiveValueOperations, ReactiveHashOperations.
+         WHY LETTUCE over Jedis: Lettuce is built on Netty — it's fully async/reactive
+         and shares the same event loop as WebFlux. Jedis uses blocking I/O (one thread
+         per connection), which defeats the purpose of a reactive stack. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+    </dependency>
+
+    <!-- =====================================================================
+         KAFKA: Spring Kafka (Producer & Consumer Integration)
+         =====================================================================
+         Provides: KafkaTemplate<K,V>, @KafkaListener, KafkaAdmin.
+         We use Spring Kafka's abstraction over the raw Apache Kafka client to
+         get Spring's auto-configuration, retry logic, and DLQ (dead-letter queue) support. -->
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+    </dependency>
+
+    <!-- =====================================================================
+         POSTGRESQL: JPA + JDBC for API Key and Audit Log Persistence
+         =====================================================================
+         spring-boot-starter-data-jpa provides Hibernate ORM + Spring Data repositories.
+         We use blocking JPA for Postgres (not reactive) because:
+           1. API key validation is infrequent relative to Redis lookups
+           2. JPA with Virtual Threads (Java 21) has near-reactive performance
+           3. Postgres's pgJDBC driver doesn't have a mature reactive driver yet -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- =====================================================================
+         OBSERVABILITY: Actuator + Micrometer OpenTelemetry Bridge
+         =====================================================================
+         spring-boot-starter-actuator: /actuator/health, /actuator/metrics endpoints.
+         micrometer-tracing-bridge-otel: Converts Micrometer spans to OpenTelemetry
+         format for export to Jaeger/Zipkin/Cloud Trace (MVP 6). -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-tracing-bridge-otel</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+
+    <!-- =====================================================================
+         LOMBOK: Compile-Time Code Generation
+         =====================================================================
+         Eliminates boilerplate: @Data generates getters/setters/equals/hashCode,
+         @Builder generates builder pattern, @Slf4j injects a logger field,
+         @RequiredArgsConstructor generates constructor for final fields. -->
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <optional>true</optional>
+    </dependency>
+
+    <!-- =====================================================================
+         VALIDATION: Jakarta Bean Validation
+         =====================================================================
+         @NotNull, @NotBlank, @Size, @Valid annotations for request payload validation.
+         Used in ChatRequest DTO to enforce the OpenAI-compatible schema. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- =====================================================================
+         JACKSON: JSON Serialization / Deserialization
+         =====================================================================
+         Included transitively via webflux, but we explicitly add the datatype
+         module for Java 8+ types (Optional, LocalDateTime, etc.). -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.datatype</groupId>
+      <artifactId>jackson-datatype-jsr310</artifactId>
+    </dependency>
+
+    <!-- =====================================================================
+         TESTING
+         =====================================================================
+         spring-boot-starter-test: JUnit 5, Mockito, Spring Test, AssertJ.
+         reactor-test: StepVerifier for testing Mono<T>/Flux<T> pipelines.
+         spring-kafka-test: EmbeddedKafkaBroker for in-memory Kafka tests. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.projectreactor</groupId>
+      <artifactId>reactor-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Embedded Redis for integration tests (no Docker required in unit test phase) -->
+    <dependency>
+      <groupId>com.github.codemonstur</groupId>
+      <artifactId>embedded-redis</artifactId>
+      <version>1.4.3</version>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Spring Boot Maven Plugin: packages the fat JAR with embedded Netty server -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <!-- Exclude Lombok from the final artifact (it's compile-time only) -->
+          <excludes>
+            <exclude>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+            </exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+
+      <!-- Compiler plugin: enforce Java 21 source/target compatibility -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <source>21</source>
+          <target>21</target>
+          <!-- Enable annotation processing for Lombok -->
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+
+      <!-- Surefire plugin: run JUnit 5 tests in the test phase -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Enable parallel test execution for faster feedback loop -->
+          <parallel>methods</parallel>
+          <threadCount>4</threadCount>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>
