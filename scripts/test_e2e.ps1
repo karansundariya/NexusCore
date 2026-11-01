@@ -46,7 +46,7 @@ $body = @{
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 try {
-    $resp = Invoke-WebRequest -Uri "$GATEWAY_URL/v1/chat/completions" -Method Post -Headers $HEADERS -Body $body -TimeoutSec 60
+    $resp = Invoke-WebRequest -Uri "$GATEWAY_URL/v1/chat/completions" -Method Post -Headers $HEADERS -Body $body -TimeoutSec 60 -UseBasicParsing
     $sw.Stop()
     $statusCode = $resp.StatusCode
     $cacheStatus = $resp.Headers["X-Cache-Status"]
@@ -81,7 +81,7 @@ Write-Host "TEST 2: Semantic Cache Hit" -ForegroundColor Yellow
 Write-Host "------------------------------------------------------" -ForegroundColor DarkGray
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 try {
-    $resp2 = Invoke-WebRequest -Uri "$GATEWAY_URL/v1/chat/completions" -Method Post -Headers $HEADERS -Body $body -TimeoutSec 60
+    $resp2 = Invoke-WebRequest -Uri "$GATEWAY_URL/v1/chat/completions" -Method Post -Headers $HEADERS -Body $body -TimeoutSec 60 -UseBasicParsing
     $sw.Stop()
     $statusCode2 = $resp2.StatusCode
     $cacheStatus2 = $resp2.Headers["X-Cache-Status"]
@@ -125,10 +125,14 @@ for ($i = 1; $i -le 70; $i++) {
     } | ConvertTo-Json
 
     try {
-        $r = Invoke-WebRequest -Uri "$GATEWAY_URL/v1/chat/completions" -Method Post -Headers $HEADERS -Body $burstBody -TimeoutSec 5 -ErrorAction SilentlyContinue
+        $r = Invoke-WebRequest -Uri "$GATEWAY_URL/v1/chat/completions" -Method Post -Headers $HEADERS -Body $burstBody -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
         if ($r.StatusCode -eq 200) { $succCount++ }
     } catch {
-        if ($_.Exception.Response.StatusCode.value__ -eq 429) {
+        $code = 0
+        if ($_.Exception -and $_.Exception.Response) {
+            $code = [int]$_.Exception.Response.StatusCode
+        }
+        if ($code -eq 429) {
             $rateLimitCount++
         }
     }
