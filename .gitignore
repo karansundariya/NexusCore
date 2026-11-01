@@ -1,0 +1,60 @@
+# =============================================================================
+# NexusCore — Root .gitignore
+# =============================================================================
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/
+!.mvn/wrapper/
+
+# Spring Boot
+*.log
+spring.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.env
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/
+
+# Secrets — NEVER commit credentials
+.env.local
+.env.production
+secrets/
+*.key
+*.pem
+*.p12
+
+# Test reports
+surefire-reports/
+test-results/
+coverage/
+.coverage
+htmlcov/
+
+# Build outputs
+*.log
+logs/

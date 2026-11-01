@@ -1,0 +1,165 @@
+# =============================================================================
+# NexusCore — Docker Compose Multi-Service Infrastructure (MVP 1)
+# =============================================================================
+# WHY THIS APPROACH:
+#   We use Docker Compose to spin up every infrastructure dependency in a single
+#   declarative file. This guarantees environment parity between local dev and CI.
+#   Each service has a deterministic startup order enforced by `depends_on` with
+#   `condition: service_healthy`, so no service starts until its dependencies
+#   pass their health checks. This avoids race-condition bugs on startup.
+#
+# SERVICES:
+#   1. redis-stack  — Redis 7 + RedisSearch module for Vector Similarity Search (VSS)
+#   2. kafka        — Apache Kafka in KRaft mode (no Zookeeper) on port 9092
+#   3. postgres     — PostgreSQL 16 for API key management and audit logging
+#
+# NETWORKING:
+#   All services share the `nexuscore-net` bridge network so that service names
+#   act as DNS hostnames (e.g., `redis-stack:6379`, `kafka:9092`).
+# =============================================================================
+
+version: '3.9'
+
+networks:
+  # Dedicated bridge network — every container can reach every other container
+  # by its service name. This is equivalent to Docker's --link but more modern.
+  nexuscore-net:
+    driver: bridge
+
+volumes:
+  # Named volumes persist data across `docker-compose down` / `up` cycles.
+  # This means your Redis index and Postgres data survive container restarts.
+  redis-data:
+  postgres-data:
+  kafka-data:
+
+services:
+
+  # ===========================================================================
+  # SERVICE 1: Redis Stack (Redis + RedisSearch + RedisInsight)
+  # ===========================================================================
+  # WHY redis-stack instead of plain redis:
+  #   Plain Redis has no native vector search. `redis/redis-stack` bundles
+  #   RedisSearch 2.8+ which provides the FT.CREATE/FT.SEARCH commands we need
+  #   for HNSW (Hierarchical Navigable Small World) approximate nearest-neighbor
+  #   vector search — our semantic caching backbone.
+  # WHY HNSW?
+  #   HNSW offers O(log n) query time with >99% recall, making it ideal for
+  #   sub-12ms cache lookups even with millions of cached embeddings.
+  redis-stack:
+    image: redis/redis-stack:latest
+    container_name: nexuscore-redis
+    ports:
+      - "6379:6379"   # Redis protocol port — used by Spring Data Redis and Python redis client
+      - "8001:8001"   # RedisInsight web GUI — browse keys, run commands, monitor memory
+    volumes:
+      - redis-data:/data   # Persist RDB snapshots and AOF log across restarts
+    environment:
+      # Enable Redis persistence so the VSS index survives restarts.
+      # appendonly yes = Append-Only File (AOF) mode: every write is durable.
+      REDIS_ARGS: "--appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru"
+    healthcheck:
+      # `redis-cli ping` returns PONG when Redis is ready to accept commands.
+      # We test every 5s for up to 30 retries (~150s max startup window).
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks:
+      - nexuscore-net
+    restart: unless-stopped
+
+  # ===========================================================================
+  # SERVICE 2: Apache Kafka (KRaft Mode — No Zookeeper)
+  # ===========================================================================
+  # WHY KRaft mode?
+  #   Traditionally Kafka required Zookeeper for metadata quorum. KRaft (Kafka
+  #   Raft Metadata mode) eliminates Zookeeper entirely, reducing operational
+  #   complexity from 2 services to 1. Kafka 3.x+ makes KRaft production-ready.
+  #
+  # WHY Kafka over RabbitMQ?
+  #   Kafka is a distributed commit log — consumers can replay events from any
+  #   offset. This gives us replay-ability for audit, debugging, and telemetry.
+  #   RabbitMQ deletes messages after ACK; Kafka retains them for configurable
+  #   retention periods, enabling the audit lake pipeline in MVP 4.
+  kafka:
+    image: apache/kafka:latest
+    container_name: nexuscore-kafka
+    ports:
+      - "9092:9092"   # External listener — used by Spring Boot gateway and Python worker
+    environment:
+      # KRaft configuration: Kafka acts as its own metadata quorum controller.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+
+      # Listener configuration:
+      #   PLAINTEXT://0.0.0.0:9092  → external clients (Spring Boot, Python) connect here
+      #   CONTROLLER://0.0.0.0:9093 → internal KRaft controller communication
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Topic auto-creation settings for development convenience.
+      # In production, disable auto-creation and manage topics via Terraform.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3             # 3 partitions allows 3 parallel consumer threads
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1 # Single broker in dev; use 3 in production clusters
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+
+      # Log retention: keep events for 7 days. This enables audit replay.
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 1073741824  # 1GB per partition log
+
+      # Cluster ID: must be a valid base64-encoded UUID for KRaft
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # Use kafka-topics.sh to list topics — proves broker is fully initialized
+      test: ["CMD", "kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks:
+      - nexuscore-net
+    restart: unless-stopped
+
+  # ===========================================================================
+  # SERVICE 3: PostgreSQL 16 — API Key Store & Audit Log
+  # ===========================================================================
+  # WHY PostgreSQL?
+  #   - ACID-compliant: API key validation must be transactionally correct.
+  #     A crash mid-write must never leave a key in a corrupt state.
+  #   - The `llm_audit_logs` table stores token counts and cost metrics. SQL
+  #     aggregates (SUM, AVG, GROUP BY) make cost reporting trivially easy.
+  #   - alpine variant: ~50MB image footprint vs ~400MB for the full image.
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexuscore-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: nexuscore          # Default database name
+      POSTGRES_USER: nexuscore        # Superuser for local dev
+      POSTGRES_PASSWORD: nexuscore_secret  # Change via secrets manager in production
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Mount our init SQL script. Postgres runs all *.sql files in /docker-entrypoint-initdb.d/
+      # on FIRST startup (when the data directory is empty).
+      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      # pg_isready checks that Postgres is accepting connections on its port
+      test: ["CMD-SHELL", "pg_isready -U nexuscore -d nexuscore"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks:
+      - nexuscore-net
+    restart: unless-stopped
