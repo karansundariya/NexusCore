@@ -148,16 +148,16 @@ init-db:
 ## init-kafka: Create required Kafka topics
 init-kafka:
 	@printf "$(BLUE)▶ Creating Kafka topics...$(RESET)\n"
-	@docker exec nexuscore-kafka kafka-topics.sh \
-		--bootstrap-server kafka:9092 \
+	@docker exec nexuscore-kafka /opt/kafka/bin/kafka-topics.sh \
+		--bootstrap-server localhost:9092 \
 		--create --if-not-exists \
 		--topic ai.prompts.unprocessed \
 		--partitions 3 \
 		--replication-factor 1 \
 		--config retention.ms=604800000 \
 		--config max.message.bytes=10485760
-	@docker exec nexuscore-kafka kafka-topics.sh \
-		--bootstrap-server kafka:9092 \
+	@docker exec nexuscore-kafka /opt/kafka/bin/kafka-topics.sh \
+		--bootstrap-server localhost:9092 \
 		--create --if-not-exists \
 		--topic ai.telemetry.events \
 		--partitions 3 \
@@ -165,7 +165,7 @@ init-kafka:
 		--config retention.ms=604800000
 	@echo ""
 	@printf "$(BLUE)▶ Listing all Kafka topics:$(RESET)\n"
-	@docker exec nexuscore-kafka kafka-topics.sh --bootstrap-server kafka:9092 --list
+	@docker exec nexuscore-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
 	@printf "$(GREEN)✓ Kafka topics created!$(RESET)\n"
 
 ## status: Show health and status of all containers
