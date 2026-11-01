@@ -59,6 +59,12 @@ import signal
 import sys
 import time
 
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Windows Python 3.12 selector compatibility patch for kafka-python
 if sys.platform == "win32" and hasattr(selectors, "SelectSelector"):
     def _safe_select_unregister(self, fileobj):
