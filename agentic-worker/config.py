@@ -65,7 +65,7 @@ class Config:
     # WHY CLAUDE 3.5 SONNET as default?
     #   It has the best code/reasoning performance on MMLU benchmarks (2024)
     #   at a cost below GPT-4o. Anthropic's API has 99.9% uptime SLA.
-    PRIMARY_MODEL: str = os.getenv("PRIMARY_MODEL", "claude-3-5-sonnet-20241022")
+    PRIMARY_MODEL: str = os.getenv("PRIMARY_MODEL", "anthropic/claude-3-5-sonnet-20241022")
 
     # Secondary fallback: used when primary returns 429 (rate limit) or 500 (error)
     # WHY GEMINI 1.5 FLASH as fallback?

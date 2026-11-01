@@ -77,7 +77,6 @@ class CacheWriter:
             decode_responses=False,  # We need raw bytes for the vector field
             socket_timeout=5,        # Fail fast on Redis unavailability
             socket_connect_timeout=5,
-            retry_on_timeout=True,   # Automatically retry on transient timeouts
             max_connections=20,      # Pool size: supports 20 concurrent writes
         )
         logger.info(

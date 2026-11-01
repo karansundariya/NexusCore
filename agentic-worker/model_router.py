@@ -100,6 +100,11 @@ class ModelRouter:
             config.TERTIARY_MODEL,
         )
 
+        if config.USE_MOCK_LLM:
+            logger.info("USE_MOCK_LLM enabled: skipping external LiteLLM Router initialization")
+            self.router = None
+            return
+
         # Define the model list for LiteLLM Router
         # Each entry specifies: model_name (alias), litellm_params (actual model + key)
         model_list = [

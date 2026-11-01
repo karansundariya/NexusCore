@@ -118,9 +118,14 @@ spring:
       # This prevents data loss if the consumer crashes between receive and persist.
       enable-auto-commit: false
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
-        spring.json.trusted.packages: "io.nexuscore.gateway.model"
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: "io.nexuscore.gateway.model.TelemetryEvent"
+        spring.json.trusted.packages: "*"
+        spring.json.use.type.headers: false
+    listener:
+      ack-mode: manual-immediate
 
 # ==============================================================================
 # SERVER CONFIGURATION

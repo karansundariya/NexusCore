@@ -227,14 +227,29 @@ public class SemanticCacheService {
      */
     @SuppressWarnings("unchecked")
     private CacheResult parseSearchResults(java.util.List<Object> results, long queryMs) {
-        // FT.SEARCH result[0] is the total count of matching documents
         if (results == null || results.isEmpty()) {
             log.debug("Redis VSS: no results returned (query took {}ms)", queryMs);
             return CacheResult.miss();
         }
 
+        // Lettuce Reactive eval with ReturnType.MULTI returns the multi-bulk response wrapped in a single List element
+        if (results.size() == 1 && results.get(0) instanceof java.util.List<?> nested) {
+            results = (java.util.List<Object>) nested;
+        }
+
+        if (results.isEmpty()) {
+            return CacheResult.miss();
+        }
+
         Object countObj = results.get(0);
-        long count = countObj instanceof Long l ? l : 0L;
+        long count = 0L;
+        if (countObj instanceof Number n) {
+            count = n.longValue();
+        } else if (countObj != null) {
+            try {
+                count = Long.parseLong(asString(countObj).trim());
+            } catch (NumberFormatException ignored) {}
+        }
 
         if (count == 0) {
             log.info("Cache MISS: no cached entries found (query took {}ms)", queryMs);
