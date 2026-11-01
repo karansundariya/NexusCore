@@ -66,8 +66,8 @@ langchain-community>=0.3.7
 # LLM Routing and Fallback
 litellm>=1.53.1
 
-# Kafka
-kafka-python==2.0.2
+# Kafka (kafka-python-ng is compatible with Python 3.12+)
+kafka-python-ng>=2.2.2
 
 # Redis Stack Client
 redis>=5.1.1
