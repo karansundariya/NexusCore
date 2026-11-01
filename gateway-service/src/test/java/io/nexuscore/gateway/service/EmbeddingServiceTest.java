@@ -67,7 +67,7 @@ class EmbeddingServiceTest {
 
         assertThat(vector1).isNotNull();
         assertThat(vector2).isNotNull();
-        assertThat(vector1).doesNotContainSequence(vector2);
+        assertThat(vector1).isNotEqualTo(vector2);
         System.out.println("✓ Different texts produce different vectors");
     }
 

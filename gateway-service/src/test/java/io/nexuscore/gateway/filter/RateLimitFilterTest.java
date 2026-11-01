@@ -127,29 +127,27 @@ public class RateLimitFilterTest extends AbstractIntegrationTest {
 
         // Fire TOTAL_REQUESTS concurrently
         Flux.range(1, TOTAL_REQUESTS)
-                .flatMap(i ->
-                        webTestClient.post()
-                                .uri("/v1/chat/completions")
-                                .contentType(MediaType.APPLICATION_JSON)
-                                .header("Authorization", "Bearer " + VALID_API_KEY)
-                                .bodyValue(buildChatRequest("Concurrent request #" + i))
-                                .exchange()
-                                .returnResult(String.class)
-                                .getStatus()
-                                // Return each status code as a Mono
-                                .map(status -> {
-                                    synchronized (statusCodes) {
-                                        statusCodes.add(status.value());
-                                    }
-                                    if (status.value() == 200) {
-                                        successCount.incrementAndGet();
-                                    } else if (status.value() == 429) {
-                                        rateLimitedCount.incrementAndGet();
-                                    }
-                                    latch.countDown();
-                                    return status.value();
-                                })
-                , TOTAL_REQUESTS)  // Concurrency = TOTAL_REQUESTS (all fired at once)
+                .flatMap(i -> Mono.fromCallable(() -> {
+                    var status = webTestClient.post()
+                            .uri("/v1/chat/completions")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .header("Authorization", "Bearer " + VALID_API_KEY)
+                            .bodyValue(buildChatRequest("Concurrent request #" + i))
+                            .exchange()
+                            .returnResult(String.class)
+                            .getStatus();
+                    int code = status.value();
+                    synchronized (statusCodes) {
+                        statusCodes.add(code);
+                    }
+                    if (code == 200) {
+                        successCount.incrementAndGet();
+                    } else if (code == 429) {
+                        rateLimitedCount.incrementAndGet();
+                    }
+                    latch.countDown();
+                    return code;
+                }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()), TOTAL_REQUESTS)  // Concurrency = TOTAL_REQUESTS
                 .blockLast(Duration.ofSeconds(30));
 
         latch.await();
@@ -190,19 +188,17 @@ public class RateLimitFilterTest extends AbstractIntegrationTest {
     void rateLimitedResponse_includesRetryAfterHeader() {
         // Exhaust the rate limit bucket
         Flux.range(1, RATE_LIMIT + 1)
-                .flatMap(i ->
-                        webTestClient.post()
-                                .uri("/v1/chat/completions")
-                                .contentType(MediaType.APPLICATION_JSON)
-                                .header("Authorization", "Bearer " + VALID_API_KEY + "-overflow-key-" + i)
-                                // Use a unique key for each to avoid cross-test contamination
-                                // Actually we want a single key to exhaust — use same key
-                                .header("Authorization", "Bearer " + VALID_API_KEY)
-                                .bodyValue(buildChatRequest("Request #" + i))
-                                .exchange()
-                                .returnResult(String.class)
-                                .getStatus()
-                , RATE_LIMIT + 1)
+                .flatMap(i -> Mono.fromCallable(() -> {
+                    return webTestClient.post()
+                            .uri("/v1/chat/completions")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .header("Authorization", "Bearer " + VALID_API_KEY)
+                            .bodyValue(buildChatRequest("Request #" + i))
+                            .exchange()
+                            .returnResult(String.class)
+                            .getStatus()
+                            .value();
+                }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()), RATE_LIMIT + 1)
                 .blockLast(Duration.ofSeconds(15));
 
         // Now send one more — should get 429 with Retry-After header

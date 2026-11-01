@@ -18,8 +18,6 @@
 #   act as DNS hostnames (e.g., `redis-stack:6379`, `kafka:9092`).
 # =============================================================================
 
-version: '3.9'
-
 networks:
   # Dedicated bridge network — every container can reach every other container
   # by its service name. This is equivalent to Docker's --link but more modern.

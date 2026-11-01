@@ -3,11 +3,13 @@ package io.nexuscore.gateway.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.connection.ReturnType;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -109,31 +111,29 @@ public class SemanticCacheService {
         log.debug("Executing Redis VSS KNN query (vector dim={})", queryVector.length);
         long startMs = System.currentTimeMillis();
 
-        // Build the FT.SEARCH command arguments
-        // We use reactive execute with a raw Redis command since ReactiveRedisTemplate
-        // doesn't have a built-in FT.SEARCH binding — we use the low-level execute API.
+        // Build the FT.SEARCH command arguments via Redis Lua script evaluation.
+        // Using eval via ReactiveScriptingCommands ensures raw binary vector bytes are passed safely
+        // to Redis Stack's FT.SEARCH without UTF-8 string conversion or corruption.
         return redisTemplate.execute(connection -> {
-                    // Build the FT.SEARCH command as raw bytes
-                    // HNSW KNN query: find 1 nearest neighbor to our query vector
-                    byte[][] cmd = new byte[][] {
-                            "FT.SEARCH".getBytes(StandardCharsets.UTF_8),
-                            indexName.getBytes(StandardCharsets.UTF_8),
-                            "*=>[KNN 1 @vector $query_vec AS score]".getBytes(StandardCharsets.UTF_8),
-                            "RETURN".getBytes(StandardCharsets.UTF_8),
-                            "3".getBytes(StandardCharsets.UTF_8),
-                            "response_text".getBytes(StandardCharsets.UTF_8),
-                            "prompt_text".getBytes(StandardCharsets.UTF_8),
-                            "score".getBytes(StandardCharsets.UTF_8),
-                            "PARAMS".getBytes(StandardCharsets.UTF_8),
-                            "2".getBytes(StandardCharsets.UTF_8),
-                            "query_vec".getBytes(StandardCharsets.UTF_8),
-                            vectorBytes,
-                            "SORTBY".getBytes(StandardCharsets.UTF_8),
-                            "score".getBytes(StandardCharsets.UTF_8),
-                            "DIALECT".getBytes(StandardCharsets.UTF_8),
-                            "2".getBytes(StandardCharsets.UTF_8)
+                    ByteBuffer scriptBytes = ByteBuffer.wrap("""
+                            local index = ARGV[1]
+                            local query = ARGV[2]
+                            local vec = ARGV[3]
+                            return redis.call('FT.SEARCH', index, query, 'RETURN', '3', 'response_text', 'prompt_text', 'score', 'PARAMS', '2', 'query_vec', vec, 'SORTBY', 'score', 'DIALECT', '2')
+                            """.getBytes(StandardCharsets.UTF_8));
+
+                    ByteBuffer[] cmdArgs = new ByteBuffer[] {
+                            ByteBuffer.wrap(indexName.getBytes(StandardCharsets.UTF_8)),
+                            ByteBuffer.wrap("*=>[KNN 1 @vector $query_vec AS score]".getBytes(StandardCharsets.UTF_8)),
+                            ByteBuffer.wrap(vectorBytes)
                     };
-                    return connection.execute("FT.SEARCH", cmd);
+
+                    return connection.scriptingCommands().eval(
+                            scriptBytes,
+                            ReturnType.MULTI,
+                            0,
+                            cmdArgs
+                    );
                 })
                 .collectList()
                 .map(results -> {
@@ -193,9 +193,9 @@ public class SemanticCacheService {
                     // We can't use the string template for binary data — use execute()
                     redisTemplate.execute(conn -> {
                         return conn.hashCommands().hSet(
-                                key.getBytes(StandardCharsets.UTF_8),
-                                "vector".getBytes(StandardCharsets.UTF_8),
-                                vectorBytes
+                                ByteBuffer.wrap(key.getBytes(StandardCharsets.UTF_8)),
+                                ByteBuffer.wrap("vector".getBytes(StandardCharsets.UTF_8)),
+                                ByteBuffer.wrap(vectorBytes)
                         );
                     }).then()
                 )
@@ -263,9 +263,9 @@ public class SemanticCacheService {
         double score = Double.MAX_VALUE;
 
         for (int i = 0; i + 1 < fieldValues.size(); i += 2) {
-            String fieldName = fieldValues.get(i) != null ? fieldValues.get(i).toString() : "";
+            String fieldName = asString(fieldValues.get(i));
             Object fieldVal = fieldValues.get(i + 1);
-            String value = fieldVal != null ? fieldVal.toString() : "";
+            String value = asString(fieldVal);
 
             switch (fieldName) {
                 case "response_text" -> responseText = value;
@@ -302,6 +302,19 @@ public class SemanticCacheService {
                     String.format("%.0f", similarityThreshold * 100));
             return CacheResult.miss();
         }
+    }
+
+    private String asString(Object obj) {
+        if (obj == null) return "";
+        if (obj instanceof String s) return s;
+        if (obj instanceof byte[] b) return new String(b, StandardCharsets.UTF_8);
+        if (obj instanceof ByteBuffer buf) {
+            ByteBuffer slice = buf.slice();
+            byte[] bytes = new byte[slice.remaining()];
+            slice.get(bytes);
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+        return obj.toString();
     }
 
     // =========================================================================
