@@ -1,0 +1,94 @@
+# =============================================================================
+# NexusCore Agentic Worker — Python Dependencies
+# =============================================================================
+# WHY THESE SPECIFIC LIBRARIES:
+#
+# langgraph==0.2.28
+#   LangGraph is a stateful, graph-based framework for building multi-step
+#   AI agent workflows. Unlike LangChain's linear chain, LangGraph models
+#   agent execution as a directed graph (nodes = processing steps, edges =
+#   conditional routing). This gives us:
+#   - Cycles: agents can loop (retry, replan, self-correct)
+#   - Conditional edges: branch based on tool call results
+#   - Persistent state: pass state between nodes without explicit plumbing
+#   WHY NOT RAW LANGCHAIN?
+#   Raw LangChain chains are acyclic (no loops). LangGraph supports cycles,
+#   which are essential for tool-using agents that need to retry or re-plan.
+#
+# langchain-core==0.3.15
+#   Core LangChain primitives: BaseMessage, HumanMessage, AIMessage, Tool,
+#   ToolMessage. LangGraph depends on these types for its message state.
+#
+# litellm==1.52.0
+#   LiteLLM provides a unified OpenAI-compatible API for 100+ LLM providers.
+#   One client call: litellm.completion(model="claude-3-5-sonnet", ...)
+#   It handles: API key management, request formatting, error parsing, and
+#   AUTOMATIC FALLBACK routing on HTTP 429/500 errors.
+#   WHY LITELLM OVER DIRECT PROVIDER SDKS?
+#   Direct provider SDKs (openai, anthropic) require separate integration code.
+#   LiteLLM normalizes all providers to the same interface, and its router
+#   handles fallback at the library level — no custom retry logic needed.
+#
+# kafka-python==2.0.2
+#   Pure-Python Kafka client. We use it to consume from ai.prompts.unprocessed
+#   and produce to ai.telemetry.events. Simpler than confluent-kafka for this use case.
+#
+# redis==5.0.8
+#   Official Python Redis client. Used by cache_writer.py to store embeddings
+#   and responses back to Redis Stack after LLM generation.
+#
+# pydantic==2.9.2
+#   Data validation library for Python. Used in the Guardrail Node to validate
+#   LLM output against a strict schema before returning to the client.
+#   Pydantic v2 is 5-10x faster than v1 (uses Rust-based core).
+#
+# openai==1.52.0
+#   OpenAI Python SDK — used by LiteLLM internally and directly for embeddings.
+#
+# opentelemetry-sdk==1.28.0
+#   OpenTelemetry instrumentation for distributed tracing (MVP 6).
+#   Propagates traceparent context through Kafka messages to correlate
+#   Gateway → Worker → Redis → Client spans in Jaeger/Cloud Trace.
+#
+# aiohttp==3.10.10
+#   Async HTTP client used by the worker to call the Gateway's internal
+#   /v1/internal/complete endpoint to deliver responses back to waiting clients.
+#
+# httpx==0.27.2
+#   Modern sync/async HTTP client. Used by the worker for non-streaming HTTP calls.
+# =============================================================================
+
+# Core LangGraph + LangChain
+langgraph==0.2.28
+langchain-core==0.3.15
+langchain-community==0.3.7
+
+# LLM Routing and Fallback
+litellm==1.52.9
+
+# Kafka
+kafka-python==2.0.2
+
+# Redis Stack Client
+redis==5.1.1
+
+# Data Validation
+pydantic==2.9.2
+
+# OpenAI SDK (used by litellm internally)
+openai==1.54.3
+
+# HTTP Clients
+aiohttp==3.11.2
+httpx==0.27.2
+
+# Observability
+opentelemetry-sdk==1.28.0
+opentelemetry-api==1.28.0
+opentelemetry-instrumentation-kafka-python==0.49b0
+opentelemetry-exporter-otlp==1.28.0
+
+# Utilities
+python-dotenv==1.0.1
+structlog==24.4.0
+tenacity==9.0.0
