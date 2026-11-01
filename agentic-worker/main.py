@@ -54,9 +54,29 @@ SHUTDOWN HANDLING:
 import json
 import logging
 import os
+import selectors
 import signal
 import sys
 import time
+
+# Windows Python 3.12 selector compatibility patch for kafka-python
+if sys.platform == "win32" and hasattr(selectors, "SelectSelector"):
+    def _safe_select_unregister(self, fileobj):
+        key = None
+        try:
+            fd = self._fileobj_lookup(fileobj)
+            key = self._fd_to_key.pop(fd, None)
+        except Exception:
+            for fd, k in list(self._fd_to_key.items()):
+                if k.fileobj is fileobj:
+                    key = self._fd_to_key.pop(fd, None)
+                    break
+        if key:
+            self._readers.discard(key.fd)
+            self._writers.discard(key.fd)
+        return key
+
+    selectors.SelectSelector.unregister = _safe_select_unregister
 from concurrent.futures import ThreadPoolExecutor, Future
 from threading import Event
 from typing import Optional
@@ -150,6 +170,7 @@ class AgenticWorker:
             consumer = KafkaConsumer(
                 config.KAFKA_TOPIC_PROMPTS,
                 bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
+                api_version=(2, 6, 0),
                 group_id=config.KAFKA_CONSUMER_GROUP,
                 enable_auto_commit=False,          # Manual offset control
                 auto_offset_reset="earliest",       # Start from beginning for new groups
@@ -176,6 +197,7 @@ class AgenticWorker:
         try:
             producer = KafkaProducer(
                 bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
+                api_version=(2, 6, 0),
                 value_serializer=lambda v: json.dumps(v).encode("utf-8"),
                 key_serializer=lambda k: k.encode("utf-8") if k else None,
                 acks="all",                        # Wait for all replicas to acknowledge
