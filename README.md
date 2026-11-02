@@ -25,6 +25,28 @@ NexusCore solves these challenges by combining a non-blocking Java 21 WebFlux ga
 
 ---
 
+## ⚡ 1-Line Drop-In Replacement (Zero Codebase Rewrites)
+
+NexusCore is architected as an **OpenAI-compatible drop-in proxy**. Enterprise development teams do **not** rewrite application code, swap client libraries, or refactor agent pipelines. 
+
+To adopt NexusCore across your entire stack, **you only update a single line of code (`base_url`)**:
+
+```python
+# BEFORE (Direct to OpenAI — 3,500ms latency, expensive duplicate calls, fragile outages):
+# client = OpenAI(api_key="sk-openai-...")
+
+# AFTER (NexusCore Mesh — 21ms semantic caching, automated fallback, rate limiting):
+client = OpenAI(
+    base_url="https://nexuscore.company.com/v1",  # <-- ONLY THIS LINE CHANGES!
+    api_key="nexuscore-dev-key-12345"             # Enterprise-issued key
+)
+```
+
+> 💡 **Universal Compatibility**: Works out of the box with official **OpenAI SDKs (Python, Node.js/TypeScript)**, **LangChain**, **LlamaIndex**, **AutoGen**, and **cURL**.  
+> 🔗 *Jump to the [Full Enterprise Integration Guide & Architecture Topology](#enterprise-integration) for TypeScript, LangChain, cURL snippets, and private VPC deployment patterns.*
+
+---
+
 ## 🎯 Production Performance Benchmarks
 
 | Metric | Direct LLM Provider (Raw) | NexusCore Platform | Engineering Impact |
@@ -318,7 +340,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ---
 
-## 🔌 How a Company Integrates NexusCore (1-Line Drop-in Replacement)
+<a id="enterprise-integration"></a>
+## 🔌 Deep-Dive: Enterprise Integration & Multi-Language SDKs
 
 NexusCore is architected as an **OpenAI-Compatible Drop-In Proxy**. **A company does NOT need to rewrite their codebase or change their SDKs.** They only change **one line of code** (the `base_url`).
 
