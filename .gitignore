@@ -48,6 +48,9 @@ secrets/
 *.pem
 *.p12
 
+# PDF documentation (kept local, generated via scripts)
+*.pdf
+
 # Test reports
 surefire-reports/
 test-results/
